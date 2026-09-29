@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smolish Downloader</title>
+<meta name="description" content="Download videos from smolish.com">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #16181c; --muted: #5b6470;
+    --border: #dfe3e8; --accent: #1d9bf0; --accent-text: #fff; --error: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #181b21; --text: #e7e9ea; --muted: #8b95a1;
+      --border: #2a2f37; --accent: #1d9bf0; --accent-text: #fff; --error: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 48px 16px;
+  }
+  main { width: 100%; max-width: 560px; }
+  h1 { margin: 0 0 4px; font-size: 1.6rem; }
+  p.sub { margin: 0 0 24px; color: var(--muted); }
+  form { display: flex; gap: 8px; }
+  input {
+    flex: 1; min-width: 0; padding: 12px 14px; font: inherit; color: var(--text);
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button, a.btn {
+    padding: 12px 18px; font: inherit; font-weight: 600; border: 0; border-radius: 10px;
+    background: var(--accent); color: var(--accent-text); cursor: pointer;
+    text-decoration: none; display: inline-block; text-align: center;
+  }
+  a.btn.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .6; cursor: wait; }
+  .error { color: var(--error); margin-top: 16px; }
+  .card {
+    margin-top: 24px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; overflow: hidden;
+  }
+  video { display: block; width: 100%; max-height: 70vh; background: #000; }
+  .info { padding: 16px; }
+  .info .author { font-weight: 600; }
+  .info .stats { color: var(--muted); font-size: .9rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .hint { color: var(--muted); font-size: .85rem; margin-top: 12px; }
+  footer { margin-top: 32px; color: var(--muted); font-size: .8rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Smolish Downloader</h1>
+  <p class="sub">Paste a smolish.com video link to preview and download it.</p>
+
+  <form id="form">
+    <input id="url" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+           placeholder="https://smolish.com/v/4549984250757120" required>
+    <button id="go" type="submit">Fetch</button>
+  </form>
+  <div id="error" class="error" hidden></div>
+
+  <section id="result" class="card" hidden>
+    <video id="video" controls playsinline preload="metadata"></video>
+    <div class="info">
+      <div id="author" class="author"></div>
+      <div id="stats" class="stats"></div>
+      <div class="actions">
+        <a id="download" class="btn" download>Download MP4</a>
+        <a id="thumb" class="btn secondary" target="_blank" rel="noopener">Thumbnail</a>
+        <a id="source" class="btn secondary" target="_blank" rel="noopener">Open on Smolish</a>
+      </div>
+      <div id="hint" class="hint" hidden>
+        Static mode: if the video opens instead of downloading, right-click it (or long-press on mobile)
+        and choose “Save video as…”.
+      </div>
+    </div>
+  </section>
+
+  <footer>Not affiliated with Smolish. Only download videos you have the right to save.</footer>
+</main>
+
+<script>
+  const CDN = 'https://cdn.smolish.com/videos';
+  const $ = (id) => document.getElementById(id);
+
+  function parseId(input) {
+    const s = String(input || '').trim();
+    if (/^\d{5,25}$/.test(s)) return s;
+    const m = s.match(/(?:smolish\.com\/v\/|cdn\.smolish\.com\/videos\/)(\d{5,25})/i);
+    return m ? m[1] : null;
+  }
+
+  // On Vercel the /api functions exist and give metadata + a forced download.
+  // On GitHub Pages (or any static host) they 404 and we fall back to the
+  // predictable CDN URLs, which the browser can play/save directly.
+  async function fetchInfo(id) {
+    try {
+      const res = await fetch(`api/info?url=${id}`);
+      if (res.ok && (res.headers.get('content-type') || '').includes('json')) {
+        return { ...(await res.json()), proxy: true };
+      }
+      if (res.status === 404 && (res.headers.get('content-type') || '').includes('json')) {
+        throw new Error((await res.json()).error || 'Video not found.');
+      }
+    } catch (e) {
+      if (e.message && !(e instanceof TypeError)) throw e;
+    }
+    return {
+      id,
+      pageUrl: `https://smolish.com/v/${id}`,
+      video: `${CDN}/${id}/1080p.mp4`,
+      thumbnail: `${CDN}/${id}/thumb.jpg`,
+      proxy: false,
+    };
+  }
+
+  function showError(msg) {
+    $('error').textContent = msg;
+    $('error').hidden = !msg;
+  }
+
+  async function load(input) {
+    showError('');
+    const id = parseId(input);
+    if (!id) {
+      $('result').hidden = true;
+      return showError('That does not look like a Smolish video link (expected smolish.com/v/<number>).');
+    }
+    $('go').disabled = true;
+    try {
+      const info = await fetchInfo(id);
+      const name = info.username ? `smolish-${info.username}-${id}` : `smolish-${id}`;
+
+      $('video').poster = info.thumbnail;
+      $('video').src = info.video;
+      $('video').onerror = () => showError('The video could not be loaded. It may have been removed or be private.');
+      $('author').textContent = info.author || `Video ${id}`;
+      $('stats').textContent = [info.title, info.stats].filter(Boolean).join(' · ');
+      $('download').href = info.proxy
+        ? `api/download?url=${id}&name=${encodeURIComponent(name)}`
+        : info.video;
+      $('download').setAttribute('download', `${name}.mp4`);
+      $('thumb').href = info.thumbnail;
+      $('source').href = info.pageUrl;
+      $('hint').hidden = info.proxy;
+      $('result').hidden = false;
+
+      const u = new URL(location.href);
+      u.searchParams.set('v', id);
+      history.replaceState(null, '', u);
+    } catch (e) {
+      $('result').hidden = true;
+      showError(e.message || 'Something went wrong.');
+    } finally {
+      $('go').disabled = false;
+    }
+  }
+
+  $('form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    load($('url').value);
+  });
+
+  // Support ?v=<id or url> so links to the downloader can be shared.
+  const initial = new URLSearchParams(location.search).get('v');
+  if (initial) {
+    $('url').value = /^\d+$/.test(initial) ? `https://smolish.com/v/${initial}` : initial;
+    load(initial);
+  }
+</script>
+</body>
+</html>
